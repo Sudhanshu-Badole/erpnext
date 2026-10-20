@@ -114,14 +114,42 @@ class SalesInvoiceGLComposer(BaseGLComposer):
 				)
 			)
 
+	def _get_item_income_account(self, item) -> str:
+		doc = self.doc
+		if not item.enable_deferred_revenue:
+			return item.income_account
+
+		if not doc.is_return:
+			return item.deferred_revenue_account
+
+		# A return reverses the deferred revenue account only while nothing has been
+		# recognised from it; once booked, the recognised amount sits in income.
+		if (
+			doc.return_against
+			and item.deferred_revenue_account
+			and not self._is_deferred_revenue_booked(item.deferred_revenue_account)
+		):
+			return item.deferred_revenue_account
+
+		return item.income_account
+
+	def _is_deferred_revenue_booked(self, deferred_account) -> bool:
+		return bool(
+			frappe.db.exists(
+				"Journal Entry Account",
+				{
+					"reference_type": "Sales Invoice",
+					"reference_name": self.doc.return_against,
+					"account": deferred_account,
+					"docstatus": 1,
+				},
+			)
+		)
+
 	def _append_item_discount_gl_entries(self, item, gl_entries) -> None:
 		doc = self.doc
 		discount_amount = item.discount_amount * item.qty
-		income_account = (
-			item.income_account
-			if (not item.enable_deferred_revenue or doc.is_return)
-			else item.deferred_revenue_account
-		)
+		income_account = self._get_item_income_account(item)
 
 		account_currency = get_account_currency(item.discount_account)
 		gl_entries.append(
@@ -376,11 +404,7 @@ class SalesInvoiceGLComposer(BaseGLComposer):
 
 	def _append_item_income_gl_entry(self, item, gl_entries, tax_service, enable_discount_accounting) -> None:
 		doc = self.doc
-		income_account = (
-			item.income_account
-			if (not item.enable_deferred_revenue or doc.is_return)
-			else item.deferred_revenue_account
-		)
+		income_account = self._get_item_income_account(item)
 
 		amount, base_amount = tax_service.get_amount_and_base_amount(item, enable_discount_accounting)
 
